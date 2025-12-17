@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>BSE Y3S1 Timetable - Visual Editor</title>
+  <style>
+    :root{--accent:#0b3d91;--muted:#e9eef9;--note:#fff7b2}
+    body{font-family:system-ui,Arial,Helvetica,sans-serif;background:#f6f8fb;margin:0;padding:18px}
+    h1{color:var(--accent);margin-bottom:6px}
+    .container{display:flex;gap:18px;align-items:flex-start}
+    /* Left panel (mapping) */
+    .panel{background:#fff;padding:12px;border-radius:8px;box-shadow:0 6px 18px rgba(11,61,145,0.06)}
+    .panel.left{width:360px;flex:0 0 360px}
+    .editor{flex:1;min-width:520px;padding:18px}
+    table{width:100%;border-collapse:collapse;table-layout:fixed}
+    thead th{padding:8px;border-bottom:2px solid #eef;text-align:left}
+    tbody td{padding:8px;border-bottom:1px solid #f1f4fb;vertical-align:top}
+    /* Make the course list scrollable without leaving the panel */
+    #coursesTable table tbody{display:block;max-height:56vh;overflow:auto}
+    #coursesTable table thead, #coursesTable table tbody tr{display:table;width:100%;table-layout:fixed}
+    select,input{padding:6px;border-radius:6px;border:1px solid #d0d8ea;background:#fff}
+    .btn{display:inline-block;padding:7px 10px;background:var(--accent);color:#fff;border-radius:6px;text-decoration:none;border:none;cursor:pointer;font-size:0.95em}
+    .btn.small{padding:6px 8px;font-size:0.85em}
+    .btn.ghost{background:transparent;color:var(--accent);border:1px solid #e6eefc}
+    .small{font-size:0.9em;color:#445}
+    /* Timetable grid */
+    .grid{display:grid;grid-template-columns:160px repeat(4,1fr);gap:12px;align-items:start}
+    .grid .cell{min-height:100px;background:transparent;border-radius:6px;padding:6px}
+    .grid .slot{background:#fff;border:1px dashed #e6eefc;border-radius:8px;padding:10px;min-height:120px}
+    .day-name{padding:10px 12px;background:var(--accent);color:#fff;border-radius:6px}
+    .note{display:inline-block;background:#fff7d6; padding:6px 8px;border-radius:6px;margin:6px 0;box-shadow:0 4px 8px rgba(0,0,0,0.06)}
+    .sticky{background:linear-gradient(180deg,#fff7d6,#fff3b4);border-left:4px solid #ffd54a;padding:8px;border-radius:6px;margin:8px 0;box-shadow:0 6px 12px rgba(0,0,0,0.06);font-size:0.95em}
+    .sticky .small{color:#333}
+    .controls{margin-bottom:10px}
+    footer{margin-top:18px;color:#556}
+
+    /* Responsive: stack on small screens */
+    @media (max-width:1000px){
+      .container{flex-direction:column}
+      .panel.left{width:auto;flex:none}
+      .editor{min-width:auto}
+      #coursesTable table tbody{max-height:28vh}
+    }
+  </style>
+</head>
+<body>
+  <h1>BSE Y3S1 Timetable — Visual Editor</h1>
+  <p class="small">Use the table on the left to map each parsed course into a Day and Time slot. Click <strong>Render Timetable</strong> to update the visual grid on the right. When satisfied, click <strong>Export HTML</strong> to download the final static timetable.</p>
+
+  <div class="container">
+    <div class="panel left">
+      <h2 style="margin-top:0">Course Mapping</h2>
+      <form id="mappingForm">
+        <div id="masterList"></div>
+        <hr style="border:none;border-top:1px solid #eef;margin:12px 0">
+        <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
+          <button type="button" class="btn" id="renderBtn">Render Timetable</button>
+          <button type="button" class="btn" id="exportBtn" style="background:#2d8f3b">Export HTML</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="editor panel">
+      <h2 style="margin-top:0">Timetable Preview</h2>
+      <div class="controls small">Columns: Morning (7–10am), Mid-morning (10–1pm), Afternoon (2–5pm), Evening (5–8pm)</div>
+      <div id="timetableRoot"></div>
+    </div>
+  </div>
+
+  <footer>
+    <p class="small">Generated from parsed CSV. Verify times/rooms against department master timetable.</p>
+  </footer>
+
+  <script>
+    // Master list of all units parsed from the PDF. Use the "Add" button to add occurrences to the timetable.
+    const masterUnits = [
+      {course:'CSE2312', unit:'Human Computer Interface', lecturer:'GACHUI', location:'ONLINE CCS', raw:'CSE 2312 (GACHUI) ONLINE CCS 2314 (NJIRU) LAB B-06'},
+      {course:'CCS2314', unit:'Web Based Programming II', lecturer:'NJIRU', location:'LAB B-06', raw:'CSE 2312 (GACHUI) ONLINE CCS 2314 (NJIRU) LAB B-06'},
+      {course:'CSE2318', unit:'Design and Analysis of Algorithms', lecturer:'Dr. NGARI', location:'A-03 CSE', raw:'CSE 2318 (Dr. NGARI) A-03 CSE 2314 (NJIRU) LAB E-02'},
+      {course:'CCE2316', unit:'Software Requirements and Architectural Design', lecturer:'MUNIU', location:'ONLINE CSE', raw:'CCE 2316 (MUNIU) ONLINE'},
+      {course:'CCS2313', unit:'Computer Graphics', lecturer:'NDITHI', location:'LIB-206 CSE', raw:'CCS 2313 (NDITHI) LIB-206'},
+      {course:'CCS2315', unit:'Distributed Systems', lecturer:'KIBE', location:'A-03 CCE', raw:'CCS 2315 (KIBE) A-03'},
+      {course:'CCS2311', unit:'Automata and Languages', lecturer:'LIECH', location:'LIB-206 CCS', raw:'CCS 2311 (LIECH) LIB-206'}
+    ];
+
+    // Scheduled occurrences (kept internally) — occurrences are created via Add button with immediate Day+Slot prompt.
+    const occurrences = [];
+
+    const dayMap = {M:'Monday',T:'Tuesday',W:'Wednesday',R:'Thursday',F:'Friday',S:'Saturday','':'Unscheduled'};
+    const slots = ['Morning','Mid-morning','Afternoon','Evening'];
+
+    // Build master list UI (left panel)
+    function buildMasterList(){
+      const root = document.getElementById('masterList');
+      root.innerHTML = '';
+      const info = document.createElement('div'); info.className='small'; info.style.marginBottom='8px'; info.textContent = 'Available units — click "Add to timetable" to create a scheduled occurrence.';
+      root.appendChild(info);
+      const list = document.createElement('div'); list.style.display='grid'; list.style.gap='8px';
+      masterUnits.forEach((u, i)=>{
+        const card = document.createElement('div'); card.style.padding='8px'; card.style.border='1px solid #eef'; card.style.borderRadius='6px'; card.style.background='#fff';
+        card.innerHTML = `<strong>${u.course}</strong> — <span class="small">${u.unit}</span><div class="small" style="margin-top:6px">${u.lecturer} — ${u.location}</div>`;
+        const btn = document.createElement('button'); btn.type='button'; btn.className='btn small'; btn.style.marginTop='8px'; btn.textContent='Add to timetable';
+        btn.addEventListener('click', ()=>{ addFromMaster(i); });
+        card.appendChild(btn);
+        list.appendChild(card);
+      });
+      root.appendChild(list);
+    }
+
+    // Add an occurrence from the master units list: prompt user for Day and Slot immediately
+    function addFromMaster(masterIdx){
+      const u = masterUnits[masterIdx];
+      // ask for day code
+      const dayInput = prompt('Enter day code (M,T,W,R,F,S) or leave blank for Unscheduled:', '');
+      if(dayInput === null) return; // cancelled
+      const day = (dayInput || '').toUpperCase().trim();
+      if(day && !['M','T','W','R','F','S'].includes(day)){
+        alert('Invalid day code — use M,T,W,R,F,S or leave blank.');
+        return;
+      }
+      // ask for slot
+      const slotInput = prompt('Enter slot number: 1=Morning,2=Mid-morning,3=Afternoon,4=Evening', '1');
+      if(slotInput === null) return; // cancelled
+      const slotIndex = parseInt(slotInput,10);
+      const slot = (slotIndex >=1 && slotIndex <=4) ? slots[slotIndex-1] : 'Morning';
+
+      const occ = { course: u.course, unit: u.unit, lecturer: u.lecturer, location: u.location, raw: u.raw, day: day || '', slot: slot };
+      occurrences.push(occ);
+      renderTimetable();
+    }
+
+    function renderTimetable(){
+      // build a grid: rows are days Monday..Saturday, first column day name, then 4 slots
+      const root = document.getElementById('timetableRoot');
+      root.innerHTML = '';
+      const grid = document.createElement('div'); grid.className='grid';
+      // header cell
+      const header = document.createElement('div'); header.className=''; header.innerHTML='<strong>Day \ Slot</strong>';
+      grid.appendChild(header);
+      slots.forEach(s=>{ const h=document.createElement('div'); h.className='day-name'; h.textContent=s; grid.appendChild(h); });
+
+      const dayOrder = ['M','T','W','R','F','S'];
+      dayOrder.forEach(d=>{
+        const dayLabel = document.createElement('div'); dayLabel.className='day-name'; dayLabel.textContent = dayMap[d] || d; grid.appendChild(dayLabel);
+        slots.forEach(s=>{ const cell=document.createElement('div'); cell.className='slot'; cell.dataset.day=d; cell.dataset.slot=s; grid.appendChild(cell); });
+      });
+
+      // unscheduled row
+      const unLabel = document.createElement('div'); unLabel.className='day-name'; unLabel.textContent='Unscheduled'; grid.appendChild(unLabel);
+      slots.forEach(s=>{ const cell=document.createElement('div'); cell.className='slot'; cell.dataset.day=''; cell.dataset.slot=s; grid.appendChild(cell); });
+
+      // place course sticky notes from scheduled occurrences (with Delete control)
+      occurrences.forEach((o, idx)=>{
+        const day = o.day || '';
+        const slot = o.slot || 'Morning';
+        // find the matching cell
+        const cell = Array.from(grid.querySelectorAll('.slot')).find(el=>el.dataset.day===day && el.dataset.slot===slot);
+        const note = document.createElement('div'); note.className='sticky';
+        const title = document.createElement('div'); title.innerHTML = `<strong>${o.course}</strong>`;
+        const desc = document.createElement('div'); desc.className = 'small'; desc.textContent = o.unit || '';
+        const meta = document.createElement('div'); meta.className = 'small'; meta.textContent = `${o.lecturer} — ${o.location}`;
+        const controls = document.createElement('div'); controls.style.marginTop = '6px';
+        const del = document.createElement('button'); del.type = 'button'; del.className = 'btn small ghost'; del.textContent = 'Delete';
+        del.addEventListener('click', ()=>{ deleteOccurrence(idx); });
+        controls.appendChild(del);
+        note.appendChild(title); note.appendChild(desc); note.appendChild(meta); note.appendChild(controls);
+        if(cell) cell.appendChild(note); else {
+          // append to Unscheduled-Morning if exact not found
+          const fallback = Array.from(grid.querySelectorAll('.slot')).find(el=>el.dataset.day==='' && el.dataset.slot==='Morning');
+          if(fallback) fallback.appendChild(note);
+        }
+      });
+
+      root.appendChild(grid);
+    }
+
+    function exportHtml(){
+      // Generate a standalone HTML file of the currently rendered timetable
+      const html = `<!doctype html>\n<html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>BSE Y3S1 Timetable</title>\n<style>body{font-family:Arial,Helvetica,sans-serif;background:#f7f9fb;padding:18px}h1{color:#0b3d91} .grid{display:grid;grid-template-columns:160px repeat(4,1fr);gap:8px} .day-name{padding:8px;background:#0b3d91;color:#fff;border-radius:6px} .slot{background:#fff;border:1px dashed #e1e6f3;border-radius:8px;padding:8px;min-height:80px} .sticky{background:linear-gradient(180deg,#fffbcc,#fff7b2);border-left:4px solid #ffd54a;padding:6px;border-radius:6px;margin:6px 0;box-shadow:0 6px 12px rgba(0,0,0,0.06)}</style></head><body><h1>BSE Y3S1 Timetable</h1>\n` + document.getElementById('timetableRoot').innerHTML + '\n</body></html>';
+      const blob = new Blob([html], {type:'text/html'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = 'BSE_Y3S1_timetable_visual.html'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    }
+
+    function deleteOccurrence(idx){
+      if(confirm(`Delete "${occurrences[idx].course}" from timetable?`)){
+        occurrences.splice(idx, 1);
+        renderTimetable();
+      }
+    }
+
+    document.getElementById('renderBtn').addEventListener('click', renderTimetable);
+    document.getElementById('exportBtn').addEventListener('click', exportHtml);
+
+    // initialize
+    buildMasterList();
+    renderTimetable();
+  </script>
+</body>
+</html>
